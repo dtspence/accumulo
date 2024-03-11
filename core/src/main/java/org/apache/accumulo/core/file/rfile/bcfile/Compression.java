@@ -27,6 +27,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
+import org.apache.accumulo.core.conf.AccumuloConfiguration;
 import org.apache.accumulo.core.spi.file.rfile.compression.Bzip2;
 import org.apache.accumulo.core.spi.file.rfile.compression.CompressionAlgorithmConfiguration;
 import org.apache.accumulo.core.spi.file.rfile.compression.Gz;
@@ -76,5 +77,10 @@ public final class Compression {
       return algorithm;
     }
     throw new IllegalArgumentException("Unsupported compression algorithm name: " + name);
+  }
+
+  public static CompressionAlgorithm getCompressionAlgorithmByName(final String name,
+      final AccumuloConfiguration tableProperties) {
+    return getCompressionAlgorithmByName(name).newTableScoped(tableProperties);
   }
 }

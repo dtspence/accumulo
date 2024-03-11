@@ -24,10 +24,13 @@ import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.Map;
 import java.util.Map.Entry;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.apache.accumulo.core.conf.AccumuloConfiguration;
+import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.spi.file.rfile.compression.CompressionAlgorithmConfiguration;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
@@ -139,6 +142,23 @@ public class CompressionAlgorithm extends Configured {
     codec = initCodec(checked, algorithm.getDefaultBufferSize(), codec);
   }
 
+  public CompressionAlgorithm newTableScoped(AccumuloConfiguration tableProperties) {
+    Configuration confCopy = new Configuration(getConf());
+    Map<String,String> propKeys = algorithm.getOptionsToConfigurationKey();
+    Map<String,String> compressOpts =
+        tableProperties.getAllPropertiesWithPrefixStripped(Property.TABLE_FILE_COMPRESSION_OPTS);
+    compressOpts.forEach((k, v) -> {
+      String confKey = propKeys.get(k);
+      if (confKey == null) {
+        LOG.debug("No property key translation for option: {}", k);
+        return;
+      }
+      LOG.debug("Applying compression option override: {}={}", confKey, v);
+      confCopy.set(confKey, v);
+    });
+    return new CompressionAlgorithm(algorithm, confCopy);
+  }
+
   /**
    * Shared function to create new codec objects. It is expected that if buffersize is invalid, a
    * codec will be created with the default buffer size.
@@ -209,6 +229,11 @@ public class CompressionAlgorithm extends Configured {
         } else {
           LOG.trace("Got a compressor: {}", compressor.hashCode());
         }
+        // CodecPool potentially does not re-initialize the very first codec w/configuration
+        // for example in CodecPool.getCompressor(codec, conf)
+        // ensure that the codec is re-initialized w/configuration and then reset
+        compressor.reinit(getConf());
+
         // The following statement is necessary to get around bugs in 0.18 where a compressor is
         // referenced after it's
         // returned back to the codec pool.

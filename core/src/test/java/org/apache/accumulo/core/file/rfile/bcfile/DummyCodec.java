@@ -30,6 +30,8 @@ import org.apache.hadoop.io.compress.CompressionOutputStream;
 import org.apache.hadoop.io.compress.Compressor;
 import org.apache.hadoop.io.compress.Decompressor;
 
+import com.google.common.annotations.VisibleForTesting;
+
 public class DummyCodec implements Configurable, CompressionCodec {
 
   Configuration conf;
@@ -88,7 +90,7 @@ public class DummyCodec implements Configurable, CompressionCodec {
    */
   @Override
   public Class<? extends Compressor> getCompressorType() {
-    throw new UnsupportedOperationException();
+    return DummyCodec.CompressorImpl.class;
   }
 
   /**
@@ -98,7 +100,7 @@ public class DummyCodec implements Configurable, CompressionCodec {
    */
   @Override
   public Compressor createCompressor() {
-    throw new UnsupportedOperationException();
+    return new CompressorImpl();
   }
 
   /**
@@ -156,6 +158,70 @@ public class DummyCodec implements Configurable, CompressionCodec {
   @Override
   public String getDefaultExtension() {
     return ".dummy";
+  }
+
+  public static class CompressorImpl implements Compressor {
+    private Configuration conf;
+
+    @VisibleForTesting
+    Configuration getConfiguration() {
+      return conf;
+    }
+
+    @Override
+    public void setInput(byte[] b, int off, int len) {
+      // no code
+    }
+
+    @Override
+    public boolean needsInput() {
+      return false;
+    }
+
+    @Override
+    public void setDictionary(byte[] b, int off, int len) {
+      // no code
+    }
+
+    @Override
+    public long getBytesRead() {
+      return 0;
+    }
+
+    @Override
+    public long getBytesWritten() {
+      return 0;
+    }
+
+    @Override
+    public void finish() {
+      // no code
+    }
+
+    @Override
+    public boolean finished() {
+      return false;
+    }
+
+    @Override
+    public int compress(byte[] bytes, int i, int i1) throws IOException {
+      return 0;
+    }
+
+    @Override
+    public void reset() {
+      // no code
+    }
+
+    @Override
+    public void end() {
+      // no code
+    }
+
+    @Override
+    public void reinit(Configuration configuration) {
+      this.conf = configuration;
+    }
   }
 
 }

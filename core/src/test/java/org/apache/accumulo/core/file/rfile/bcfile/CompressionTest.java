@@ -20,6 +20,7 @@ package org.apache.accumulo.core.file.rfile.bcfile;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -27,12 +28,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
+import org.apache.accumulo.core.conf.AccumuloConfiguration;
+import org.apache.accumulo.core.conf.Property;
+import org.apache.accumulo.core.conf.SiteConfiguration;
 import org.apache.accumulo.core.spi.file.rfile.compression.Bzip2;
 import org.apache.accumulo.core.spi.file.rfile.compression.Gz;
 import org.apache.accumulo.core.spi.file.rfile.compression.Lz4;
@@ -41,6 +46,7 @@ import org.apache.accumulo.core.spi.file.rfile.compression.Snappy;
 import org.apache.accumulo.core.spi.file.rfile.compression.ZStandard;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.compress.CompressionCodec;
+import org.apache.hadoop.io.compress.Compressor;
 import org.apache.hadoop.io.compress.SnappyCodec;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.junit.jupiter.api.BeforeEach;
@@ -339,6 +345,25 @@ public class CompressionTest {
           "Hadoop override DummyCodec not loaded");
     } finally {
       System.clearProperty(new Snappy().getCodecClassNameProperty());
+    }
+  }
+
+  @Test
+  public void testConfigurationReinitializeOnCompressor() {
+    String codecName = new ZStandard().getCodecClassNameProperty();
+    System.setProperty(codecName, DummyCodec.class.getName());
+    try {
+      CompressionAlgorithm algo = Compression.getCompressionAlgorithmByName("zstd");
+      String keyPrefix = Property.TABLE_FILE_COMPRESSION_OPTS.getKey();
+      Map<String,String> opts = Map.of(keyPrefix + "compression.level", "9");
+      AccumuloConfiguration tableProps = SiteConfiguration.empty().withOverrides(opts).build();
+      CompressionAlgorithm algoScoped = algo.newTableScoped(tableProps);
+      Compressor compressor = algoScoped.getCompressor();
+      assertInstanceOf(DummyCodec.CompressorImpl.class, compressor);
+      DummyCodec.CompressorImpl testCompress = (DummyCodec.CompressorImpl) compressor;
+      assertEquals(testCompress.getConfiguration().get("io.compression.codec.zstd.level"), "9");
+    } finally {
+      System.clearProperty(codecName);
     }
   }
 

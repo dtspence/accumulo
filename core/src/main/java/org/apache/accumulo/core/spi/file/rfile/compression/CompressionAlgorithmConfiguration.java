@@ -18,8 +18,9 @@
  */
 package org.apache.accumulo.core.spi.file.rfile.compression;
 
-public interface CompressionAlgorithmConfiguration {
+import java.util.Map;
 
+public interface CompressionAlgorithmConfiguration {
   /**
    * @return algorithm alias
    */
@@ -54,4 +55,12 @@ public interface CompressionAlgorithmConfiguration {
     return false;
   }
 
+  /**
+   * Gets option keys to configuration key lookup.
+   *
+   * @return options to configuration key lookup
+   */
+  default Map<String,String> getOptionsToConfigurationKey() {
+    return Map.of();
+  }
 }

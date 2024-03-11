@@ -313,13 +313,20 @@ public final class BCFile {
      */
     public Writer(FSDataOutputStream fout, RateLimiter writeLimiter, String compressionName,
         Configuration conf, CryptoService cryptoService) throws IOException {
+      this(fout, writeLimiter, Compression.getCompressionAlgorithmByName(compressionName), conf,
+          cryptoService);
+    }
+
+    public Writer(FSDataOutputStream fout, RateLimiter writeLimiter,
+        CompressionAlgorithm compressionAlgo, Configuration conf, CryptoService cryptoService)
+        throws IOException {
       if (fout.getPos() != 0) {
         throw new IOException("Output file not at zero offset.");
       }
 
       this.out = new RateLimitedOutputStream(fout, writeLimiter);
       this.conf = conf;
-      dataIndex = new DataIndex(compressionName);
+      dataIndex = new DataIndex(compressionAlgo);
       metaIndex = new MetaIndex();
       fsOutputBuffer = new BytesWritable();
       Magic.write(this.out);
@@ -861,9 +868,8 @@ public final class BCFile {
     }
 
     // for write
-    public DataIndex(String defaultCompressionAlgorithmName) {
-      this.defaultCompressionAlgorithm =
-          Compression.getCompressionAlgorithmByName(defaultCompressionAlgorithmName);
+    public DataIndex(CompressionAlgorithm defaultCompressionAlgorithm) {
+      this.defaultCompressionAlgorithm = defaultCompressionAlgorithm;
       listRegions = new ArrayList<>();
     }
 

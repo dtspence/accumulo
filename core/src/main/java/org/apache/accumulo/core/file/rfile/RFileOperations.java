@@ -34,6 +34,8 @@ import org.apache.accumulo.core.file.FileSKVIterator;
 import org.apache.accumulo.core.file.FileSKVWriter;
 import org.apache.accumulo.core.file.blockfile.impl.CachableBlockFile.CachableBuilder;
 import org.apache.accumulo.core.file.rfile.bcfile.BCFile;
+import org.apache.accumulo.core.file.rfile.bcfile.Compression;
+import org.apache.accumulo.core.file.rfile.bcfile.CompressionAlgorithm;
 import org.apache.accumulo.core.sample.impl.SamplerConfigurationImpl;
 import org.apache.accumulo.core.sample.impl.SamplerFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -114,6 +116,9 @@ public class RFileOperations extends FileOperations {
     compression = compression == null
         ? options.getTableConfiguration().get(Property.TABLE_FILE_COMPRESSION_TYPE) : compression;
 
+    CompressionAlgorithm compressionAlgo =
+        Compression.getCompressionAlgorithmByName(compression, acuconf);
+
     FSDataOutputStream outputStream = options.getOutputStream();
 
     Configuration conf = options.getConfiguration();
@@ -155,7 +160,7 @@ public class RFileOperations extends FileOperations {
       }
     }
 
-    BCFile.Writer _cbw = new BCFile.Writer(outputStream, options.getRateLimiter(), compression,
+    BCFile.Writer _cbw = new BCFile.Writer(outputStream, options.getRateLimiter(), compressionAlgo,
         conf, options.cryptoService);
 
     return new RFile.Writer(_cbw, (int) blockSize, (int) indexBlockSize, samplerConfig, sampler);

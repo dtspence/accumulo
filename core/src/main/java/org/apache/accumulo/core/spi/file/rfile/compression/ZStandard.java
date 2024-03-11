@@ -18,6 +18,8 @@
  */
 package org.apache.accumulo.core.spi.file.rfile.compression;
 
+import java.util.Map;
+
 public class ZStandard implements CompressionAlgorithmConfiguration {
 
   @Override
@@ -48,6 +50,11 @@ public class ZStandard implements CompressionAlgorithmConfiguration {
   @Override
   public boolean cacheCodecsWithNonDefaultSizes() {
     return true;
+  }
+
+  @Override
+  public Map<String,String> getOptionsToConfigurationKey() {
+    return Map.of("compression.level", "io.compression.codec.zstd.level");
   }
 
 }

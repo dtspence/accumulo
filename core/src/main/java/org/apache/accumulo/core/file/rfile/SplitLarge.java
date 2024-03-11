@@ -32,6 +32,8 @@ import org.apache.accumulo.core.file.blockfile.impl.CachableBlockFile.CachableBu
 import org.apache.accumulo.core.file.rfile.RFile.Reader;
 import org.apache.accumulo.core.file.rfile.RFile.Writer;
 import org.apache.accumulo.core.file.rfile.bcfile.BCFile;
+import org.apache.accumulo.core.file.rfile.bcfile.Compression;
+import org.apache.accumulo.core.file.rfile.bcfile.CompressionAlgorithm;
 import org.apache.accumulo.core.spi.crypto.CryptoService;
 import org.apache.accumulo.start.spi.KeywordExecutable;
 import org.apache.hadoop.conf.Configuration;
@@ -81,6 +83,8 @@ public class SplitLarge implements KeywordExecutable {
       CryptoService cs = CryptoFactoryLoader.getServiceForServer(aconf);
       Path path = new Path(file);
       CachableBuilder cb = new CachableBuilder().fsPath(fs, path).conf(conf).cryptoService(cs);
+      CompressionAlgorithm compr = Compression.getCompressionAlgorithmByName("gz", aconf);
+
       try (Reader iter = new RFile.Reader(cb)) {
 
         if (!file.endsWith(".rf")) {
@@ -92,9 +96,10 @@ public class SplitLarge implements KeywordExecutable {
         int blockSize = (int) aconf.getAsBytes(Property.TABLE_FILE_BLOCK_SIZE);
         try (
             Writer small = new RFile.Writer(
-                new BCFile.Writer(fs.create(new Path(smallName)), null, "gz", conf, cs), blockSize);
+                new BCFile.Writer(fs.create(new Path(smallName)), null, compr, conf, cs),
+                blockSize);
             Writer large = new RFile.Writer(
-                new BCFile.Writer(fs.create(new Path(largeName)), null, "gz", conf, cs),
+                new BCFile.Writer(fs.create(new Path(largeName)), null, compr, conf, cs),
                 blockSize)) {
           small.startDefaultLocalityGroup();
           large.startDefaultLocalityGroup();
