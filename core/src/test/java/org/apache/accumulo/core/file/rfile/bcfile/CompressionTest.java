@@ -20,10 +20,14 @@ package org.apache.accumulo.core.file.rfile.bcfile;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -41,11 +45,17 @@ import org.apache.accumulo.core.spi.file.rfile.compression.Snappy;
 import org.apache.accumulo.core.spi.file.rfile.compression.ZStandard;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.compress.CompressionCodec;
+import org.apache.hadoop.io.compress.CompressionInputStream;
+import org.apache.hadoop.io.compress.CompressionOutputStream;
+import org.apache.hadoop.io.compress.Compressor;
+import org.apache.hadoop.io.compress.Decompressor;
 import org.apache.hadoop.io.compress.SnappyCodec;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+
+import com.google.common.annotations.VisibleForTesting;
 
 public class CompressionTest {
 
@@ -339,6 +349,139 @@ public class CompressionTest {
           "Hadoop override DummyCodec not loaded");
     } finally {
       System.clearProperty(new Snappy().getCodecClassNameProperty());
+    }
+  }
+
+  @Test
+  public void testConfigurationReinitializeOnCompressor() {
+    System.setProperty(new Snappy().getCodecClassNameProperty(),
+        ConfigurationTestCodec.class.getName());
+    try {
+      CompressionAlgorithm algo = Compression.getCompressionAlgorithmByName("snappy");
+      Configuration conf = new Configuration(false);
+      conf.set("test-key", "test-val");
+      Compressor compressor = algo.getCompressor(conf);
+      assertInstanceOf(ConfigurationTestCompressor.class, compressor);
+      assertEquals(((ConfigurationTestCompressor) compressor).getConfiguration().get("test-key"),
+          "test-val");
+    } finally {
+      System.clearProperty(new Snappy().getCodecClassNameProperty());
+    }
+  }
+
+  @VisibleForTesting
+  public static class ConfigurationTestCodec implements CompressionCodec {
+
+    @Override
+    public CompressionOutputStream createOutputStream(OutputStream outputStream)
+        throws IOException {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public CompressionOutputStream createOutputStream(OutputStream outputStream,
+        Compressor compressor) throws IOException {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Class<? extends Compressor> getCompressorType() {
+      return ConfigurationTestCompressor.class;
+    }
+
+    @Override
+    public Compressor createCompressor() {
+      return new ConfigurationTestCompressor();
+    }
+
+    @Override
+    public CompressionInputStream createInputStream(InputStream inputStream) throws IOException {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public CompressionInputStream createInputStream(InputStream inputStream,
+        Decompressor decompressor) throws IOException {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Class<? extends Decompressor> getDecompressorType() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Decompressor createDecompressor() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public String getDefaultExtension() {
+      return null;
+    }
+  }
+
+  @VisibleForTesting
+  public static class ConfigurationTestCompressor implements Compressor {
+    private Configuration conf;
+
+    public Configuration getConfiguration() {
+      return conf;
+    }
+
+    @Override
+    public void setInput(byte[] b, int off, int len) {
+      // no code
+    }
+
+    @Override
+    public boolean needsInput() {
+      return false;
+    }
+
+    @Override
+    public void setDictionary(byte[] b, int off, int len) {
+      // no code
+    }
+
+    @Override
+    public long getBytesRead() {
+      return 0;
+    }
+
+    @Override
+    public long getBytesWritten() {
+      return 0;
+    }
+
+    @Override
+    public void finish() {
+      // no code
+    }
+
+    @Override
+    public boolean finished() {
+      return false;
+    }
+
+    @Override
+    public int compress(byte[] bytes, int i, int i1) throws IOException {
+      return 0;
+    }
+
+    @Override
+    public void reset() {
+      // no code
+    }
+
+    @Override
+    public void end() {
+      // no code
+    }
+
+    @Override
+    public void reinit(Configuration configuration) {
+      this.conf = configuration;
     }
   }
 

@@ -198,7 +198,7 @@ public class CompressionAlgorithm extends Configured {
     return codec;
   }
 
-  public Compressor getCompressor() {
+  public Compressor getCompressor(Configuration conf) {
     CompressionCodec codec = getCodec();
     if (codec != null) {
       Compressor compressor = CodecPool.getCompressor(codec);
@@ -209,6 +209,11 @@ public class CompressionAlgorithm extends Configured {
         } else {
           LOG.trace("Got a compressor: {}", compressor.hashCode());
         }
+        // CodecPool potentially does not re-initialize the very first codec w/configuration
+        // for example in CodecPool.getCompressor(codec, conf)
+        // ensure that the codec is re-initialized w/configuration and then reset
+        compressor.reinit(conf);
+
         // The following statement is necessary to get around bugs in 0.18 where a compressor is
         // referenced after it's
         // returned back to the codec pool.

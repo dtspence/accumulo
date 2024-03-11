@@ -148,7 +148,7 @@ public final class BCFile {
 
         this.fsBufferedOutput =
             new SimpleBufferedOutputStream(this.fsOut, fsOutputBuffer.getBytes());
-        this.compressor = compressAlgo.getCompressor();
+        this.compressor = compressAlgo.getCompressor(conf);
 
         try {
           this.cipherOut = encrypter.encryptStream(fsBufferedOutput);

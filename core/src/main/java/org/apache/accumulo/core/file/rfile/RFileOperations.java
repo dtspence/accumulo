@@ -118,6 +118,13 @@ public class RFileOperations extends FileOperations {
 
     Configuration conf = options.getConfiguration();
 
+    options.getTableConfiguration().getAllPropertiesWithPrefix(Property.TABLE_FILE_COMPRESSION_OPTS)
+        .forEach((k, v) -> {
+          String keyOverride = k.substring(Property.TABLE_FILE_COMPRESSION_OPTS.getKey().length());
+          LOG.debug("Applying compression option override/overlay: {}={}", keyOverride, v);
+          conf.set(keyOverride, v);
+        });
+
     if (outputStream == null) {
       int hrep = conf.getInt("dfs.replication", 3);
       int trep = acuconf.getCount(Property.TABLE_FILE_REPLICATION);
