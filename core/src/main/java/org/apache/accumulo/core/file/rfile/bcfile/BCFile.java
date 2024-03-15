@@ -106,10 +106,10 @@ public final class BCFile {
   public static class Writer implements Closeable {
     private final RateLimitedOutputStream out;
     private final Configuration conf;
+    private final CompressionAlgorithm compressionAlgo;
+    private final Compressor cachedCompressor;
     private FileEncrypter encrypter;
     private CryptoEnvironmentImpl cryptoEnvironment;
-    // the single meta block containing index of compressed data blocks
-    final DataIndex dataIndex;
     // index for meta blocks
     final MetaIndex metaIndex;
     boolean blkInProgress = false;
@@ -128,19 +128,15 @@ public final class BCFile {
      * Intermediate class that maintain the state of a Writable Compression Block.
      */
     private static final class WBlockState {
-      private final CompressionAlgorithm compressAlgo;
-      private Compressor compressor; // !null only if using native
-      // Hadoop compression
       private final RateLimitedOutputStream fsOut;
       private final OutputStream cipherOut;
       private final long posStart;
       private final SimpleBufferedOutputStream fsBufferedOutput;
       private OutputStream out;
 
-      public WBlockState(CompressionAlgorithm compressionAlgo, RateLimitedOutputStream fsOut,
-          BytesWritable fsOutputBuffer, Configuration conf, FileEncrypter encrypter)
-          throws IOException {
-        this.compressAlgo = compressionAlgo;
+      public WBlockState(CompressionAlgorithm compressionAlgo, Compressor compressor,
+          RateLimitedOutputStream fsOut, BytesWritable fsOutputBuffer, Configuration conf,
+          FileEncrypter encrypter) throws IOException {
         this.fsOut = fsOut;
         this.posStart = fsOut.position();
 
@@ -148,15 +144,9 @@ public final class BCFile {
 
         this.fsBufferedOutput =
             new SimpleBufferedOutputStream(this.fsOut, fsOutputBuffer.getBytes());
-        this.compressor = compressAlgo.getCompressor();
 
-        try {
-          this.cipherOut = encrypter.encryptStream(fsBufferedOutput);
-          this.out = compressionAlgo.createCompressionStream(cipherOut, compressor, 0);
-        } catch (IOException e) {
-          compressAlgo.returnCompressor(compressor);
-          throw e;
-        }
+        this.cipherOut = encrypter.encryptStream(fsBufferedOutput);
+        this.out = compressionAlgo.createCompressionStream(cipherOut, compressor, 0);
       }
 
       /**
@@ -192,27 +182,22 @@ public final class BCFile {
        * Finishing up the current block.
        */
       public void finish() throws IOException {
-        try {
-          if (out != null) {
-            out.flush();
+        if (out != null) {
+          out.flush();
 
-            // If the cipherOut stream is different from the fsBufferedOutput stream, then we likely
-            // have
-            // an actual encrypted output stream that needs to be closed in order for it
-            // to flush the final bytes to the output stream. We should have set the flag to
-            // make sure that this close does *not* close the underlying stream, so calling
-            // close here should do the write thing.
+          // If the cipherOut stream is different from the fsBufferedOutput stream, then we likely
+          // have
+          // an actual encrypted output stream that needs to be closed in order for it
+          // to flush the final bytes to the output stream. We should have set the flag to
+          // make sure that this close does *not* close the underlying stream, so calling
+          // close here should do the write thing.
 
-            if (fsBufferedOutput != cipherOut) {
-              // Close the cipherOutputStream
-              cipherOut.close();
-            }
-
-            out = null;
+          if (fsBufferedOutput != cipherOut) {
+            // Close the cipherOutputStream
+            cipherOut.close();
           }
-        } finally {
-          compressAlgo.returnCompressor(compressor);
-          compressor = null;
+
+          out = null;
         }
       }
     }
@@ -326,12 +311,19 @@ public final class BCFile {
 
       this.out = new RateLimitedOutputStream(fout, writeLimiter);
       this.conf = conf;
-      dataIndex = new DataIndex(compressionAlgo);
       metaIndex = new MetaIndex();
       fsOutputBuffer = new BytesWritable();
       Magic.write(this.out);
       this.cryptoEnvironment = new CryptoEnvironmentImpl(Scope.TABLE, null, null);
       this.encrypter = cryptoService.getFileEncrypter(this.cryptoEnvironment);
+
+      this.compressionAlgo = compressionAlgo;
+
+      // cache compressor for lifetime of writer
+      // maintain reset/lifecycle on block preparation and writer close
+      // the usages are expected to correctly maintain state as the compressor
+      // and writer ensures reset is properly called to prepare the compressor
+      this.cachedCompressor = compressionAlgo.getCompressor();
     }
 
     /**
@@ -351,9 +343,8 @@ public final class BCFile {
           }
 
           // add metaBCFileIndex to metaIndex as the last meta block
-          try (BlockAppender appender =
-              prepareMetaBlock(DataIndex.BLOCK_NAME, getDefaultCompressionAlgorithm())) {
-            dataIndex.write(appender);
+          try (BlockAppender appender = prepareMetaBlock(DataIndex.BLOCK_NAME, compressionAlgo)) {
+            new DataIndex(compressionAlgo).write(appender);
           }
 
           long offsetIndexMeta = out.position();
@@ -371,14 +362,13 @@ public final class BCFile {
           out.flush();
           length = out.position();
           out.close();
+
+          cachedCompressor.reset();
         }
       } finally {
+        compressionAlgo.returnCompressor(cachedCompressor);
         closed = true;
       }
-    }
-
-    private CompressionAlgorithm getDefaultCompressionAlgorithm() {
-      return dataIndex.getDefaultCompressionAlgorithm();
     }
 
     private BlockAppender prepareMetaBlock(String name, CompressionAlgorithm compressAlgo)
@@ -391,8 +381,11 @@ public final class BCFile {
         throw new MetaBlockAlreadyExists("name=" + name);
       }
 
+      cachedCompressor.reset();
+
       MetaBlockRegister mbr = new MetaBlockRegister(name, compressAlgo);
-      WBlockState wbs = new WBlockState(compressAlgo, out, fsOutputBuffer, conf, encrypter);
+      WBlockState wbs =
+          new WBlockState(compressAlgo, cachedCompressor, out, fsOutputBuffer, conf, encrypter);
       BlockAppender ba = new BlockAppender(mbr, wbs);
       blkInProgress = true;
       metaBlkSeen = true;
@@ -410,7 +403,7 @@ public final class BCFile {
      * @throws MetaBlockAlreadyExists If the meta block with the name already exists.
      */
     public BlockAppender prepareMetaBlock(String name) throws IOException, MetaBlockAlreadyExists {
-      return prepareMetaBlock(name, getDefaultCompressionAlgorithm());
+      return prepareMetaBlock(name, compressionAlgo);
     }
 
     /**
@@ -429,8 +422,10 @@ public final class BCFile {
         throw new IllegalStateException("Cannot create Data Block after Meta Blocks.");
       }
 
+      cachedCompressor.reset();
+
       WBlockState wbs =
-          new WBlockState(getDefaultCompressionAlgorithm(), out, fsOutputBuffer, conf, encrypter);
+          new WBlockState(compressionAlgo, cachedCompressor, out, fsOutputBuffer, conf, encrypter);
       BlockAppender ba = new BlockAppender(wbs);
       blkInProgress = true;
       return ba;

@@ -232,12 +232,8 @@ public class CompressionAlgorithm extends Configured {
         // CodecPool potentially does not re-initialize the very first codec w/configuration
         // for example in CodecPool.getCompressor(codec, conf)
         // ensure that the codec is re-initialized w/configuration and then reset
+        // Re-init will reset the compressor
         compressor.reinit(getConf());
-
-        // The following statement is necessary to get around bugs in 0.18 where a compressor is
-        // referenced after it's
-        // returned back to the codec pool.
-        compressor.reset();
       }
       return compressor;
     }
