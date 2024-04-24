@@ -1312,7 +1312,7 @@ public class CompactableImpl implements Compactable {
       newFile = CompactableUtils.bringOnline(tablet.getDatafileManager(), cInfo, stats,
           compactFiles, allFiles, kind, tmpFileName);
 
-      TabletLogger.compacted(getExtent(), job, newFile.orElse(null));
+      TabletLogger.compacted(getExtent(), job, newFile.orElse(null), startTime);
       successful = true;
     } catch (CompactionCanceledException cce) {
       log.debug("Compaction canceled {} ", getExtent());
@@ -1349,7 +1349,7 @@ public class CompactableImpl implements Compactable {
       ecInfo.meta = new ExternalCompactionMetadata(cInfo.jobFiles,
           Sets.difference(cInfo.selectedFiles, cInfo.jobFiles), compactTmpName, compactorId,
           job.getKind(), job.getPriority(), job.getExecutor(), cInfo.propagateDeletes,
-          cInfo.initiallySelectedAll, cInfo.checkCompactionId);
+          cInfo.initiallySelectedAll, cInfo.checkCompactionId, System.currentTimeMillis());
 
       tablet.getContext().getAmple().mutateTablet(getExtent())
           .putExternalCompaction(externalCompactionId, ecInfo.meta).mutate();
@@ -1404,7 +1404,7 @@ public class CompactableImpl implements Compactable {
                   ecInfo.meta.getCompactTmpName(), ecInfo.meta.getCompactionId(),
                   Sets.union(ecInfo.meta.getJobFiles(), ecInfo.meta.getNextFiles()),
                   new DataFileValue(fileSize, entries), Optional.of(extCompactionId));
-          TabletLogger.compacted(getExtent(), ecInfo.job, metaFile.orElse(null));
+          TabletLogger.compacted(getExtent(), ecInfo.job, metaFile.orElse(null), ecInfo.meta.getCompactionBeginMillis());
           successful = true;
         } catch (Exception e) {
           metaFile = Optional.empty();

@@ -255,7 +255,7 @@ public class MergeIT extends AccumuloClusterHarness {
           Set<StoredTabletFile> jobFiles =
               Set.of(new StoredTabletFile("file:///accumulo/tables/t-0/b-0/b2.rf"));
           ExternalCompactionMetadata ecMeta = new ExternalCompactionMetadata(jobFiles, jobFiles,
-              tmpFile, "localhost:4444", CompactionKind.SYSTEM, (short) 2, ceid, false, false, 44L);
+              tmpFile, "localhost:4444", CompactionKind.SYSTEM, (short) 2, ceid, false, false, 44L, 0L);
           tablet.putExternalCompaction(ecid, ecMeta);
           tablet.mutate();
         }

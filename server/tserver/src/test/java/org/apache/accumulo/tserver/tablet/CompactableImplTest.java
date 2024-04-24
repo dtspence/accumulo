@@ -56,7 +56,7 @@ public class CompactableImplTest {
     CompactionExecutorId ceid = CompactionExecutorIdImpl.externalId("ecs1");
 
     return new ExternalCompactionMetadata(jobFiles, nextFiles, compactTmpName, compactorId, kind,
-        priority, ceid, propagateDeletes, initiallySelectedAll, compactionId);
+        priority, ceid, propagateDeletes, initiallySelectedAll, compactionId, System.currentTimeMillis());
   }
 
   ExternalCompactionId newEcid() {

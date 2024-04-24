@@ -48,11 +48,12 @@ public class ExternalCompactionMetadata {
   private final boolean propagateDeletes;
   private final boolean initiallySelectedAll;
   private final Long compactionId;
+  private final Long compactionBeginMillis;
 
   public ExternalCompactionMetadata(Set<StoredTabletFile> jobFiles, Set<StoredTabletFile> nextFiles,
       TabletFile compactTmpName, String compactorId, CompactionKind kind, short priority,
       CompactionExecutorId ceid, boolean propagateDeletes, boolean initiallySelectedAll,
-      Long compactionId) {
+      Long compactionId, Long compactionBeginMillis) {
     if (!initiallySelectedAll && !propagateDeletes
         && (kind == CompactionKind.SELECTOR || kind == CompactionKind.USER)) {
       throw new IllegalArgumentException(
@@ -69,6 +70,7 @@ public class ExternalCompactionMetadata {
     this.propagateDeletes = propagateDeletes;
     this.initiallySelectedAll = initiallySelectedAll;
     this.compactionId = compactionId;
+    this.compactionBeginMillis = compactionBeginMillis;
   }
 
   public Set<StoredTabletFile> getJobFiles() {
@@ -111,6 +113,10 @@ public class ExternalCompactionMetadata {
     return compactionId;
   }
 
+  public Long getCompactionBeginMillis() {
+    return compactionBeginMillis;
+  }
+
   // This class is used to serialize and deserialize this class using GSon. Any changes to this
   // class must consider persisted data.
   private static class GSonData {
@@ -124,6 +130,7 @@ public class ExternalCompactionMetadata {
     boolean propDels;
     boolean selectedAll;
     Long compactionId;
+    Long compactionBeginMillis;
   }
 
   public String toJson() {
@@ -140,6 +147,7 @@ public class ExternalCompactionMetadata {
     jData.propDels = propagateDeletes;
     jData.selectedAll = initiallySelectedAll;
     jData.compactionId = compactionId;
+    jData.compactionBeginMillis = compactionBeginMillis;
     return GSON.toJson(jData);
   }
 
@@ -151,7 +159,7 @@ public class ExternalCompactionMetadata {
         jData.nextFiles.stream().map(StoredTabletFile::new).collect(toSet()),
         new TabletFile(new Path(jData.tmp)), jData.compactor, CompactionKind.valueOf(jData.kind),
         jData.priority, CompactionExecutorIdImpl.externalId(jData.executorId), jData.propDels,
-        jData.selectedAll, jData.compactionId);
+        jData.selectedAll, jData.compactionId, jData.compactionBeginMillis);
   }
 
   @Override

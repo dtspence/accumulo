@@ -140,9 +140,11 @@ public class TabletLogger {
     }
   }
 
-  public static void compacted(KeyExtent extent, CompactionJob job, TabletFile output) {
-    fileLog.debug("Compacted {} for {} created {} from {}", extent, job.getKind(), output,
-        asFileNames(job.getFiles()));
+  public static void compacted(KeyExtent extent, CompactionJob job, TabletFile output, long startTimeMillis) {
+    String invokeTime = startTimeMillis == 0 ? "n/a" :
+        Long.toString(TimeUnit.MILLISECONDS.toSeconds(System.currentTimeMillis() - startTimeMillis));
+    fileLog.debug("Compacted {} for {} created {} from {} [{} secs]", extent, job.getKind(), output,
+        asFileNames(job.getFiles()), invokeTime);
   }
 
   public static void flushed(KeyExtent extent, Optional<StoredTabletFile> newDatafile) {
