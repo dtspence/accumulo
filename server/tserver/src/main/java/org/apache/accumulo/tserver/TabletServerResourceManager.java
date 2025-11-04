@@ -95,7 +95,6 @@ import org.slf4j.LoggerFactory;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Suppliers;
 import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
@@ -133,8 +132,6 @@ public class TabletServerResourceManager {
   private final BlockCache _iCache;
   private final BlockCache _sCache;
   private final ServerContext context;
-
-  private final Cache<String,Long> fileLenCache;
 
   /**
    * This method creates a task that changes the number of core and maximum threads on the thread
@@ -382,12 +379,7 @@ public class TabletServerResourceManager {
     scanExecutorChoices = scanExecCfg.stream().collect(toUnmodifiableMap(cfg -> cfg.name,
         cfg -> new ScanExecutorImpl(cfg, scanExecQueues.get(cfg.name))));
 
-    int maxOpenFiles = acuConf.getCount(Property.TSERV_SCAN_MAX_OPENFILES);
-
-    fileLenCache =
-        CacheBuilder.newBuilder().maximumSize(Math.min(maxOpenFiles * 1000L, 100_000)).build();
-
-    fileManager = new FileManager(context, maxOpenFiles, fileLenCache);
+    fileManager = new FileManager(context);
 
     memoryManager = new LargestFirstMemoryManager();
     memoryManager.init(context);
@@ -875,7 +867,7 @@ public class TabletServerResourceManager {
   }
 
   public Cache<String,Long> getFileLenCache() {
-    return fileLenCache;
+    return fileManager.getFileLenCache();
   }
 
   public ExecutorService getSummaryRetrievalExecutor() {

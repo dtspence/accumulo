@@ -28,12 +28,12 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import org.apache.accumulo.core.client.SampleNotPresentException;
+import org.apache.accumulo.core.conf.AccumuloConfiguration.Deriver;
 import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.Value;
@@ -67,7 +67,7 @@ public class FileManager {
 
   private static final Logger log = LoggerFactory.getLogger(FileManager.class);
 
-  private final int maxOpen;
+  private static final long CHECK_CONFIGURATION_MILLIS = 5000;
 
   private static class OpenReader implements Comparable<OpenReader> {
     long releaseTime;
@@ -101,77 +101,102 @@ public class FileManager {
 
   private final Map<String,List<OpenReader>> openFiles;
   private final HashMap<FileSKVIterator,String> reservedReaders;
-
-  private final Semaphore filePermits;
-
-  private final Cache<String,Long> fileLenCache;
-
-  private final long maxIdleTime;
-  private final long slowFilePermitMillis;
+  private final FileAccessCoordinator fileResources;
+  private final Deriver<FileManagerConfiguration> confDeriver;
 
   private final ServerContext context;
 
-  private class IdleFileCloser implements Runnable {
+  private volatile long slowFilePermitMillis;
 
+  private class IdleFileCloser implements Runnable {
     @Override
     public void run() {
+      long maxIdleTime = confDeriver.derive().getMaxIdleMillis();
+      try {
+        long curTime = System.currentTimeMillis();
+        ArrayList<FileSKVIterator> filesToClose = new ArrayList<>();
 
-      long curTime = System.currentTimeMillis();
+        // determine which files to close in a sync block, and then close the
+        // files outside of the sync block
+        synchronized (FileManager.this) {
+          Iterator<Entry<String,List<OpenReader>>> iter = openFiles.entrySet().iterator();
+          while (iter.hasNext()) {
+            Entry<String,List<OpenReader>> entry = iter.next();
+            List<OpenReader> ofl = entry.getValue();
+            for (Iterator<OpenReader> oflIter = ofl.iterator(); oflIter.hasNext();) {
+              OpenReader openReader = oflIter.next();
+              if (curTime - openReader.releaseTime > maxIdleTime) {
+                filesToClose.add(openReader.reader);
+                oflIter.remove();
+              }
+            }
 
-      ArrayList<FileSKVIterator> filesToClose = new ArrayList<>();
-
-      // determine which files to close in a sync block, and then close the
-      // files outside of the sync block
-      synchronized (FileManager.this) {
-        Iterator<Entry<String,List<OpenReader>>> iter = openFiles.entrySet().iterator();
-        while (iter.hasNext()) {
-          Entry<String,List<OpenReader>> entry = iter.next();
-          List<OpenReader> ofl = entry.getValue();
-
-          for (Iterator<OpenReader> oflIter = ofl.iterator(); oflIter.hasNext();) {
-            OpenReader openReader = oflIter.next();
-
-            if (curTime - openReader.releaseTime > maxIdleTime) {
-
-              filesToClose.add(openReader.reader);
-              oflIter.remove();
+            if (ofl.isEmpty()) {
+              iter.remove();
             }
           }
-
-          if (ofl.isEmpty()) {
-            iter.remove();
-          }
         }
+
+        closeReaders(filesToClose);
+      } finally {
+        log.trace("Rescheduling idle max closer, maxIdleTime={}", maxIdleTime);
+        ThreadPools.watchCriticalScheduledTask(
+            context.getScheduledExecutor().schedule(this, maxIdleTime / 2, TimeUnit.MILLISECONDS));
+
       }
-
-      closeReaders(filesToClose);
-
     }
 
   }
 
-  public FileManager(ServerContext context, int maxOpen, Cache<String,Long> fileLenCache) {
+  private class ConfigurationChecker implements Runnable {
+    private final AtomicBoolean running = new AtomicBoolean(false);
 
-    if (maxOpen <= 0) {
-      throw new IllegalArgumentException("maxOpen <= 0");
+    @Override
+    public void run() {
+      if (!running.compareAndSet(false, true)) {
+        log.info("Previous configuration update is still in progress, skipping");
+        return;
+      }
+      try {
+        log.trace("File resource configuration checking");
+        FileManagerConfiguration param = confDeriver.derive();
+        if (param.getMaxOpen() != fileResources.getMaxOpen()) {
+          log.trace("File resource configuration changing: {} -> {}", fileResources.getMaxOpen(),
+              param.getMaxOpen());
+          fileResources.resetConfiguration(param.getMaxOpen());
+        }
+        if (param.getSlowFilePermitMillis() != slowFilePermitMillis) {
+          log.trace("Slow file permits changing: {} -> {}", slowFilePermitMillis,
+              param.getSlowFilePermitMillis());
+          slowFilePermitMillis = param.getSlowFilePermitMillis();
+        }
+      } catch (Exception e) {
+        log.error("Failed to apply changes to configuration", e);
+      } finally {
+        running.set(false);
+      }
     }
-    this.context = context;
-    this.fileLenCache = fileLenCache;
+  }
 
-    // Creates a fair semaphore to ensure thread starvation doesn't occur
-    this.filePermits = new Semaphore(maxOpen, true);
-    this.maxOpen = maxOpen;
+  public FileManager(ServerContext context) {
+
+    this.context = context;
 
     this.openFiles = new HashMap<>();
     this.reservedReaders = new HashMap<>();
+    this.confDeriver = FileManagerConfiguration.newDeriver(context.getConfiguration());
 
-    this.maxIdleTime = this.context.getConfiguration().getTimeInMillis(Property.TSERV_MAX_IDLE);
+    FileManagerConfiguration conf = confDeriver.derive();
+
+    this.fileResources = new FileAccessCoordinator(conf.getMaxOpen());
+    this.slowFilePermitMillis = conf.getSlowFilePermitMillis();
+
+    ThreadPools.watchCriticalScheduledTask(this.context.getScheduledExecutor()
+        .schedule(new IdleFileCloser(), conf.getMaxIdleMillis(), TimeUnit.MILLISECONDS));
+
     ThreadPools.watchCriticalScheduledTask(
-        this.context.getScheduledExecutor().scheduleWithFixedDelay(new IdleFileCloser(),
-            maxIdleTime, maxIdleTime / 2, TimeUnit.MILLISECONDS));
-
-    this.slowFilePermitMillis =
-        this.context.getConfiguration().getTimeInMillis(Property.TSERV_SLOW_FILEPERMIT_MILLIS);
+        context.getScheduledExecutor().scheduleWithFixedDelay(new ConfigurationChecker(),
+            CHECK_CONFIGURATION_MILLIS, CHECK_CONFIGURATION_MILLIS, TimeUnit.MILLISECONDS));
   }
 
   private static int countReaders(Map<String,List<OpenReader>> files) {
@@ -248,7 +273,7 @@ public class FileManager {
   private Map<FileSKVIterator,String> reserveReaders(KeyExtent tablet, Collection<String> files,
       boolean continueOnFailure, CacheProvider cacheProvider) throws IOException {
 
-    if (!tablet.isMeta() && files.size() >= maxOpen) {
+    if (!tablet.isMeta() && files.size() >= fileResources.getMaxOpen()) {
       throw new IllegalArgumentException("requested files exceeds max open");
     }
 
@@ -260,15 +285,20 @@ public class FileManager {
     List<FileSKVIterator> filesToClose = Collections.emptyList();
     Map<FileSKVIterator,String> readersReserved = new HashMap<>();
 
+    FileAccessCoordinator.ResourceState resourceView = null;
     if (!tablet.isMeta()) {
       long start = System.currentTimeMillis();
-      filePermits.acquireUninterruptibly(files.size());
+      resourceView = fileResources.acquireUninterruptibly(files.size());
       long waitTime = System.currentTimeMillis() - start;
 
       if (waitTime >= slowFilePermitMillis) {
-        log.warn("Slow file permits request: {} ms, files requested: {}, "
-            + "max open files: {}, tablet: {}", waitTime, files.size(), maxOpen, tablet);
+        log.warn(
+            "Slow file permits request: {} ms, files requested: {}, "
+                + "max open files: {}, tablet: {}",
+            waitTime, files.size(), resourceView.getMaxOpen(), tablet);
       }
+    } else {
+      resourceView = fileResources.getState();
     }
 
     // now that we are past the semaphore, we have the authority
@@ -284,9 +314,9 @@ public class FileManager {
       if (!filesToOpen.isEmpty()) {
         int numOpen = countReaders(openFiles);
 
-        if (filesToOpen.size() + numOpen + reservedReaders.size() > maxOpen) {
-          filesToClose =
-              takeLRUOpenFiles((filesToOpen.size() + numOpen + reservedReaders.size()) - maxOpen);
+        if (filesToOpen.size() + numOpen + reservedReaders.size() > resourceView.getMaxOpen()) {
+          filesToClose = takeLRUOpenFiles(
+              (filesToOpen.size() + numOpen + reservedReaders.size()) - resourceView.getMaxOpen());
         }
       }
     }
@@ -310,7 +340,7 @@ public class FileManager {
         FileSKVIterator reader = FileOperations.getInstance().newReaderBuilder()
             .forFile(path.toString(), ns, ns.getConf(), tableConf.getCryptoService())
             .withTableConfiguration(tableConf).withCacheProvider(cacheProvider)
-            .withFileLenCache(fileLenCache).build();
+            .withFileLenCache(resourceView.getFileLengthCache()).build();
         readersReserved.put(reader, file);
       } catch (Exception e) {
 
@@ -320,7 +350,7 @@ public class FileManager {
         if (continueOnFailure) {
           // release the permit for the file that failed to open
           if (!tablet.isMeta()) {
-            filePermits.release(1);
+            fileResources.release(1);
           }
           log.warn("Failed to open file {} {} continuing...", file, e.getMessage(), e);
         } else {
@@ -328,7 +358,7 @@ public class FileManager {
           closeReaders(readersReserved.keySet());
 
           if (!tablet.isMeta()) {
-            filePermits.release(files.size());
+            fileResources.release(files.size());
           }
 
           log.error("Failed to open file {} {}", file, e.getMessage());
@@ -381,9 +411,13 @@ public class FileManager {
 
     // decrement the semaphore
     if (!tablet.isMeta()) {
-      filePermits.release(readers.size());
+      fileResources.release(readers.size());
     }
 
+  }
+
+  public Cache<String,Long> getFileLenCache() {
+    return fileResources.getFileLengthCache();
   }
 
   static class FileDataSource implements DataSource {
@@ -487,11 +521,11 @@ public class FileManager {
       // one tablet can not open more than maxOpen files, otherwise it could get stuck
       // forever waiting on itself to release files
 
-      if (tabletReservedReaders.size() + files.size() >= maxOpen) {
+      if (tabletReservedReaders.size() + files.size() >= fileResources.getMaxOpen()) {
         throw new TooManyFilesException(
             "Request to open files would exceed max open files reservedReaders.size()="
                 + tabletReservedReaders.size() + " files.size()=" + files.size() + " maxOpen="
-                + maxOpen + " tablet = " + tablet);
+                + fileResources.getMaxOpen() + " tablet = " + tablet);
       }
 
       Map<FileSKVIterator,String> newlyReservedReaders =
@@ -595,6 +629,6 @@ public class FileManager {
   }
 
   public int getOpenFiles() {
-    return maxOpen - filePermits.availablePermits();
+    return fileResources.getOpenPermits();
   }
 }
