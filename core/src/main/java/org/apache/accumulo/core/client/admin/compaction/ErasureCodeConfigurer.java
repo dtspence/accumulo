@@ -21,6 +21,7 @@ package org.apache.accumulo.core.client.admin.compaction;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.apache.accumulo.core.client.PluginEnvironment;
 import org.apache.accumulo.core.conf.ConfigurationTypeHelper;
 import org.apache.accumulo.core.conf.Property;
 
@@ -78,6 +79,8 @@ public class ErasureCodeConfigurer extends CompressionConfigurer {
   @Override
   public Overrides override(InputParameters params) {
     Map<String,String> overs = new HashMap<>(super.override(params).getOverrides());
+    PluginEnvironment.Configuration tableConf =
+        params.getEnvironment().getConfiguration(params.getTableId());
     if (this.byPassEC) {
       // Allow for user initiated compactions to pass an options to bypass EC.
       overs.put(Property.TABLE_ENABLE_ERASURE_CODES.getKey(), "disable");
@@ -85,11 +88,19 @@ public class ErasureCodeConfigurer extends CompressionConfigurer {
       long inputsSum =
           params.getInputFiles().stream().mapToLong(CompactableFile::getEstimatedSize).sum();
       if (inputsSum >= this.ecSize) {
-        overs.put(Property.TABLE_ENABLE_ERASURE_CODES.getKey(), "enable");
-        if (ecPolicyName != null) {
-          overs.put(Property.TABLE_ERASURE_CODE_POLICY.getKey(), ecPolicyName);
+        // For files above the threshold, check the current table EC setting
+        String tableEcSetting = tableConf.get(Property.TABLE_ENABLE_ERASURE_CODES.getKey());
+
+        // Only override to "enable" if the table doesn't have "inherit"
+        // If it's "inherit", preserve that setting to allow directory-level EC configuration
+        if (!tableEcSetting.equals("inherit")) {
+          overs.put(Property.TABLE_ENABLE_ERASURE_CODES.getKey(), "enable");
+          if (ecPolicyName != null) {
+            overs.put(Property.TABLE_ERASURE_CODE_POLICY.getKey(), ecPolicyName);
+          }
         }
       } else {
+        // For files below the threshold, always disable EC
         overs.put(Property.TABLE_ENABLE_ERASURE_CODES.getKey(), "disable");
       }
     }
