@@ -98,10 +98,34 @@ public class SystemIteratorUtil {
   public static SortedKeyValueIterator<Key,Value> setupSystemScanIterators(
       SortedKeyValueIterator<Key,Value> source, Set<Column> cols, Authorizations auths,
       byte[] defaultVisibility, AccumuloConfiguration conf) throws IOException {
+    return setupSystemScanIterators(source, cols, auths, defaultVisibility, conf, false);
+  }
+
+  /**
+   * Sets up system scan iterators. When columnar execution is enabled, visibility filtering and
+   * column family filtering are handled at the RFile level by columnar batch filters, so
+   * {@link VisibilityFilter} and {@link ColumnFamilySkippingIterator} are bypassed.
+   * {@link DeletingIterator} always runs at this level because delete handling is a cross-file
+   * operation that must occur after the merge.
+   *
+   * @param columnarEnabled when true, bypasses VisibilityFilter and ColumnFamilySkippingIterator
+   */
+  public static SortedKeyValueIterator<Key,Value> setupSystemScanIterators(
+      SortedKeyValueIterator<Key,Value> source, Set<Column> cols, Authorizations auths,
+      byte[] defaultVisibility, AccumuloConfiguration conf, boolean columnarEnabled)
+      throws IOException {
+    // DeletingIterator always runs — delete handling is a cross-file operation
     SortedKeyValueIterator<Key,Value> delIter =
         DeletingIterator.wrap(source, false, DeletingIterator.getBehavior(conf));
-    ColumnFamilySkippingIterator cfsi = new ColumnFamilySkippingIterator(delIter);
-    SortedKeyValueIterator<Key,Value> colFilter = ColumnQualifierFilter.wrap(cfsi, cols);
-    return VisibilityFilter.wrap(colFilter, auths, defaultVisibility);
+
+    if (columnarEnabled) {
+      // Visibility and CF filtering are handled at the RFile level by columnar batch filters.
+      // Only apply ColumnQualifierFilter (cheap, per-entry, no columnar equivalent yet).
+      return ColumnQualifierFilter.wrap(delIter, cols);
+    } else {
+      ColumnFamilySkippingIterator cfsi = new ColumnFamilySkippingIterator(delIter);
+      SortedKeyValueIterator<Key,Value> colFilter = ColumnQualifierFilter.wrap(cfsi, cols);
+      return VisibilityFilter.wrap(colFilter, auths, defaultVisibility);
+    }
   }
 }

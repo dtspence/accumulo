@@ -773,9 +773,7 @@ public class RFile {
       this.startBlock = lgm.startBlock;
       blockCount = index.size();
       this.version = version;
-
       this.reader = reader;
-
     }
 
     public LocalityGroupReader(LocalityGroupReader lgr) {

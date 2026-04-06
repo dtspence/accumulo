@@ -33,15 +33,24 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
+import org.apache.accumulo.core.client.PluginEnvironment;
 import org.apache.accumulo.core.client.SampleNotPresentException;
+import org.apache.accumulo.core.client.sample.SamplerConfiguration;
 import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.data.Key;
+import org.apache.accumulo.core.data.TableId;
 import org.apache.accumulo.core.data.Value;
 import org.apache.accumulo.core.dataImpl.KeyExtent;
 import org.apache.accumulo.core.file.FileOperations;
 import org.apache.accumulo.core.file.FileSKVIterator;
 import org.apache.accumulo.core.file.blockfile.impl.CacheProvider;
+import org.apache.accumulo.core.file.rfile.columnar.ColumnFamilyColumnarFilter;
+import org.apache.accumulo.core.file.rfile.columnar.ColumnarBatchFilter;
+import org.apache.accumulo.core.file.rfile.columnar.ColumnarIteratorConfigUtil;
+import org.apache.accumulo.core.file.rfile.columnar.ColumnarScanIterator;
+import org.apache.accumulo.core.file.rfile.columnar.VisibilityColumnarFilter;
 import org.apache.accumulo.core.iterators.IteratorEnvironment;
+import org.apache.accumulo.core.iterators.IteratorUtil.IteratorScope;
 import org.apache.accumulo.core.iterators.SortedKeyValueIterator;
 import org.apache.accumulo.core.iteratorsImpl.system.InterruptibleIterator;
 import org.apache.accumulo.core.iteratorsImpl.system.SourceSwitchingIterator;
@@ -50,6 +59,8 @@ import org.apache.accumulo.core.iteratorsImpl.system.TimeSettingIterator;
 import org.apache.accumulo.core.metadata.TabletFile;
 import org.apache.accumulo.core.metadata.schema.DataFileValue;
 import org.apache.accumulo.core.sample.impl.SamplerConfigurationImpl;
+import org.apache.accumulo.core.security.Authorizations;
+import org.apache.accumulo.core.spi.common.ServiceEnvironment;
 import org.apache.accumulo.core.util.threads.ThreadPools;
 import org.apache.accumulo.server.ServerContext;
 import org.apache.accumulo.server.conf.TableConfiguration;
@@ -69,6 +80,79 @@ public class FileManager {
   private static final Logger log = LoggerFactory.getLogger(FileManager.class);
 
   private final int maxOpen;
+
+  /**
+   * Minimal IteratorEnvironment that only provides authorizations, used to initialize columnar
+   * batch filters.
+   */
+  @SuppressWarnings("deprecation")
+  private static class ColumnarIteratorEnv implements IteratorEnvironment {
+    private final Authorizations auths;
+
+    ColumnarIteratorEnv(Authorizations auths) {
+      this.auths = auths;
+    }
+
+    @Override
+    public Authorizations getAuthorizations() {
+      return auths;
+    }
+
+    @Override
+    public IteratorScope getIteratorScope() {
+      return IteratorScope.scan;
+    }
+
+    @Override
+    public SortedKeyValueIterator<Key,Value> reserveMapFileReader(String mapFileName) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean isFullMajorCompaction() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void registerSideChannel(SortedKeyValueIterator<Key,Value> iter) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public IteratorEnvironment cloneWithSamplingEnabled() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean isSamplingEnabled() {
+      return false;
+    }
+
+    @Override
+    public SamplerConfiguration getSamplerConfiguration() {
+      return null;
+    }
+
+    @Override
+    public boolean isUserCompaction() {
+      return false;
+    }
+
+    @Override
+    public ServiceEnvironment getServiceEnv() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public PluginEnvironment getPluginEnv() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public TableId getTableId() {
+      return null;
+    }
+  }
 
   private static class OpenReader implements Comparable<OpenReader> {
     long releaseTime;
@@ -513,6 +597,12 @@ public class FileManager {
 
     public synchronized List<InterruptibleIterator> openFiles(Map<TabletFile,DataFileValue> files,
         boolean detachable, SamplerConfigurationImpl samplerConfig) throws IOException {
+      return openFiles(files, detachable, samplerConfig, null);
+    }
+
+    public synchronized List<InterruptibleIterator> openFiles(Map<TabletFile,DataFileValue> files,
+        boolean detachable, SamplerConfigurationImpl samplerConfig, Authorizations auths)
+        throws IOException {
 
       Map<FileSKVIterator,String> newlyReservedReaders = openFiles(
           files.keySet().stream().map(TabletFile::getPathStr).collect(Collectors.toList()));
@@ -520,6 +610,16 @@ public class FileManager {
       ArrayList<InterruptibleIterator> iters = new ArrayList<>();
 
       boolean sawTimeSet = files.values().stream().anyMatch(DataFileValue::isTimeSet);
+
+      TableConfiguration tableConf = context.getTableConfiguration(tablet.tableId());
+      boolean columnarEnabled =
+          tableConf != null && tableConf.getBoolean(Property.TABLE_COLUMNAR_ENABLED);
+      List<ColumnarBatchFilter> columnarFilters = null;
+      int batchThreshold = 10;
+      if (columnarEnabled) {
+        batchThreshold = tableConf.getCount(Property.TABLE_COLUMNAR_BATCH_THRESHOLD);
+        columnarFilters = createColumnarFilters(tableConf, auths);
+      }
 
       for (Entry<FileSKVIterator,String> entry : newlyReservedReaders.entrySet()) {
         FileSKVIterator source = entry.getKey();
@@ -533,8 +633,20 @@ public class FileManager {
           }
         }
 
-        iter = new ProblemReportingIterator(context, tablet.tableId(), filename, continueOnFailure,
-            detachable ? getSsi(filename, source) : source);
+        if (columnarEnabled) {
+          // Wrap the file reader with a per-scan columnar filter iterator.
+          // Each scan gets its own wrapper with scan-specific state (authorizations, CF filter).
+          // The underlying cached reader stays clean. The columnar wrapper sits on top of
+          // the SSI/source so that getSsi() receives the original FileSKVIterator.
+          SortedKeyValueIterator<Key,Value> base = detachable ? getSsi(filename, source) : source;
+          ColumnarScanIterator columnarIter =
+              new ColumnarScanIterator(base, columnarFilters, batchThreshold);
+          iter = new ProblemReportingIterator(context, tablet.tableId(), filename,
+              continueOnFailure, columnarIter);
+        } else {
+          iter = new ProblemReportingIterator(context, tablet.tableId(), filename,
+              continueOnFailure, detachable ? getSsi(filename, source) : source);
+        }
 
         if (sawTimeSet) {
           // constructing FileRef is expensive so avoid if not needed
@@ -548,6 +660,28 @@ public class FileManager {
       }
 
       return iters;
+    }
+
+    private List<ColumnarBatchFilter> createColumnarFilters(TableConfiguration tableConf,
+        Authorizations auths) throws IOException {
+      List<ColumnarBatchFilter> filters = new ArrayList<>();
+
+      // Built-in system-equivalent filters (visibility and CF).
+      // DeleteColumnarFilter is NOT included — DeletingIterator handles deletes at the merge level.
+      VisibilityColumnarFilter visFilter = new VisibilityColumnarFilter();
+      visFilter.init(Collections.emptyMap(), new ColumnarIteratorEnv(auths));
+      filters.add(visFilter);
+
+      ColumnFamilyColumnarFilter cfFilter = new ColumnFamilyColumnarFilter();
+      cfFilter.init(Collections.emptyMap(), null);
+      filters.add(cfFilter);
+
+      // User-configured columnar filters from table properties
+      List<ColumnarBatchFilter> userFilters =
+          ColumnarIteratorConfigUtil.loadColumnarFilters(tableConf, new ColumnarIteratorEnv(auths));
+      filters.addAll(userFilters);
+
+      return filters;
     }
 
     private SourceSwitchingIterator getSsi(String filename, FileSKVIterator source) {

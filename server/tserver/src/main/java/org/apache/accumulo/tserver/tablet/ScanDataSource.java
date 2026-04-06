@@ -196,8 +196,8 @@ class ScanDataSource implements DataSource {
       files = reservation.getSecond();
     }
 
-    List<InterruptibleIterator> mapfiles =
-        fileManager.openFiles(files, scanParams.isIsolated(), samplerConfig);
+    List<InterruptibleIterator> mapfiles = fileManager.openFiles(files, scanParams.isIsolated(),
+        samplerConfig, scanParams.getAuthorizations());
 
     List.of(mapfiles, memIters).forEach(c -> c.forEach(ii -> ii.setInterruptFlag(interruptFlag)));
 
@@ -228,9 +228,12 @@ class ScanDataSource implements DataSource {
     statsIterator = new StatsIterator(multiIter, scanSeekCounter, TabletServer.seekCount,
         scanCounter, tablet.getScannedCounter(), tablet.getScanMetrics().getScannedCounter());
 
-    SortedKeyValueIterator<Key,Value> visFilter =
-        SystemIteratorUtil.setupSystemScanIterators(statsIterator, scanParams.getColumnSet(),
-            scanParams.getAuthorizations(), defaultLabels, tablet.getTableConfiguration());
+    boolean columnarEnabled =
+        tablet.getTableConfiguration().getBoolean(Property.TABLE_COLUMNAR_ENABLED);
+    SortedKeyValueIterator<Key,
+        Value> visFilter = SystemIteratorUtil.setupSystemScanIterators(statsIterator,
+            scanParams.getColumnSet(), scanParams.getAuthorizations(), defaultLabels,
+            tablet.getTableConfiguration(), columnarEnabled);
 
     if (loadIters) {
       List<IterInfo> iterInfos;

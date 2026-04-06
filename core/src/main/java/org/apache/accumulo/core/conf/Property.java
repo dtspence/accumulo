@@ -1345,6 +1345,29 @@ public enum Property {
       "Determines whether index block cache is enabled for a table.", "1.3.5"),
   TABLE_BLOCKCACHE_ENABLED("table.cache.block.enable", "false", PropertyType.BOOLEAN,
       "Determines whether data block cache is enabled for a table.", "1.3.5"),
+  @Experimental
+  TABLE_COLUMNAR_ENABLED("table.columnar.enabled", "false", PropertyType.BOOLEAN,
+      "Experimental: Enables the columnar/vectorized scan path. When enabled, visibility"
+          + " and column family filtering are performed at the per-file level via columnar batch"
+          + " filters, bypassing the system VisibilityFilter and ColumnFamilySkippingIterator."
+          + " Delete handling remains at the system iterator level (DeletingIterator) for"
+          + " cross-file correctness.",
+      "2.1.5"),
+  @Experimental
+  TABLE_COLUMNAR_BATCH_THRESHOLD("table.columnar.batch.threshold", "10", PropertyType.COUNT,
+      "Controls batch sizing for the columnar scan path. Below this threshold of"
+          + " consecutive next() calls, single-entry batches are used. At or above the"
+          + " threshold, larger batches are built for scan-heavy workloads. Lower values"
+          + " switch to large batches sooner. Set to 1 to always use large batches.",
+      "2.1.5"),
+  @Experimental
+  TABLE_COLUMNAR_ITERATOR_PREFIX("table.columnar.iterator.", null, PropertyType.PREFIX,
+      "Properties in this category specify columnar batch iterators applied during"
+          + " the columnar read path. These operate on batches of entries in columnar format"
+          + " before conversion to row-based iteration. Configuration follows the same pattern"
+          + " as regular iterators:\n" + "table.columnar.iterator.<name> = <priority>,<className>\n"
+          + "with options via table.columnar.iterator.<name>.opt.<optionName> = <value>.",
+      "2.1.5"),
   TABLE_ITERATOR_PREFIX("table.iterator.", null, PropertyType.PREFIX,
       "Properties in this category specify iterators that are applied at"
           + " various stages (scopes) of interaction with a table. These properties"
