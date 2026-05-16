@@ -183,37 +183,54 @@ public class CachableBlockFile {
 
       BCFile.Reader reader = bcfr.get();
       if (reader == null) {
-        RateLimitedInputStream fsIn =
-            new RateLimitedInputStream((InputStream & Seekable) inputSupplier.get(), readLimiter);
+        RateLimitedInputStream fsIn = null;
         BCFile.Reader tmpReader = null;
-        byte[] serializedMetadata = cachedMetadataSupplier.get();
-        if (serializedMetadata == null) {
-          if (fileLenCache == null) {
-            tmpReader = new BCFile.Reader(fsIn, lengthSupplier.get(), conf, cryptoService);
-          } else {
-            long len = getCachedFileLen();
-            try {
-              tmpReader = new BCFile.Reader(fsIn, len, conf, cryptoService);
-            } catch (Exception e) {
-              log.debug("Failed to open {}, clearing file length cache and retrying", cacheId, e);
-              fileLenCache.invalidate(cacheId);
-            }
+        try {
+          fsIn = new RateLimitedInputStream((InputStream & Seekable) inputSupplier.get(), readLimiter);
+          byte[] serializedMetadata = cachedMetadataSupplier.get();
+          if (serializedMetadata == null) {
+            if (fileLenCache == null) {
+              tmpReader = new BCFile.Reader(fsIn, lengthSupplier.get(), conf, cryptoService);
+            } else {
+              long len = getCachedFileLen();
+              try {
+                tmpReader = new BCFile.Reader(fsIn, len, conf, cryptoService);
+              } catch (Exception e) {
+                log.debug("Failed to open {}, clearing file length cache and retrying", cacheId, e);
+                fileLenCache.invalidate(cacheId);
+              }
 
-            if (tmpReader == null) {
-              len = getCachedFileLen();
-              tmpReader = new BCFile.Reader(fsIn, len, conf, cryptoService);
+              if (tmpReader == null) {
+                len = getCachedFileLen();
+                tmpReader = new BCFile.Reader(fsIn, len, conf, cryptoService);
+              }
             }
+          } else {
+            tmpReader = new BCFile.Reader(serializedMetadata, fsIn, conf, cryptoService);
           }
-        } else {
-          tmpReader = new BCFile.Reader(serializedMetadata, fsIn, conf, cryptoService);
+        } catch (Exception e) {
+          // tmpReader is last allocation on each calling path, no close is required
+          // if there was an error, the fsIn may need to be closed
+          try {
+            if (fsIn != null) {
+              fsIn.close();
+            }
+          } catch (IOException ioe) {
+            e.addSuppressed(ioe);
+          }
+          throw e;
         }
 
         if (bcfr.compareAndSet(null, tmpReader)) {
           fin = fsIn;
           return tmpReader;
         } else {
-          fsIn.close();
-          tmpReader.close();
+          try {
+            tmpReader.close();
+            fsIn.close();
+          } catch (IOException ioe) {
+            log.debug("Failed to close input resource", ioe);
+          }
           return bcfr.get();
         }
       }
