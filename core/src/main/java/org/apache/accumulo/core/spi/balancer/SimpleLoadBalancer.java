@@ -208,6 +208,25 @@ public class SimpleLoadBalancer implements TabletBalancer {
         }
         int needToUnload = tooMany.count - goal;
         ServerCounts tooLittle = totals.get(end);
+        // ---- Migration double-count bug (regressed by ACCUMULO-2952, 2014) ----
+        // move() decrements/increments the live ServerCounts as it proposes migrations (see
+        // "tooLittle.count++" in move()), so tooLittle.count already reflects the tablets loaded
+        // into this recipient during THIS pass. Subtracting movedAlready as well counts those
+        // tablets twice: the loop then treats the recipient as full once
+        // (tooLittle.count + movedAlready >= goal), i.e. after it has received only HALF of its
+        // real deficit. The recipient is then dropped (end--) and must wait for the next balance
+        // round, which again moves half the remainder -- producing geometric
+        // 48 -> 24 -> 12 -> 6 ... convergence instead of finishing in a single pass.
+        //
+        // Originally (2011) ServerCounts.count was final (a start-of-pass snapshot), so
+        // movedAlready was the only running tally and this subtraction was correct. ACCUMULO-2952
+        // made count mutable (to track projected post-balance counts) but left this line
+        // unchanged, creating the double-count.
+        //
+        // FIX: rely solely on the live count -- uncomment the line below, remove the buggy line
+        // that follows it, and delete the now-dead movedAlready variable and its updates
+        // ("int movedAlready = 0;", "movedAlready = 0;", "movedAlready += needToUnload;").
+        //   int needToLoad = goal - tooLittle.count;
         int needToLoad = goal - tooLittle.count - movedAlready;
         if (needToUnload < 1 && needToLoad < 1) {
           break;

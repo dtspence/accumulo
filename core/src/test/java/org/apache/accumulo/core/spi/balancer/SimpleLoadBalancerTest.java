@@ -50,6 +50,7 @@ import org.apache.accumulo.core.spi.balancer.data.TabletStatistics;
 import org.apache.accumulo.core.tabletserver.thrift.TabletStats;
 import org.apache.hadoop.io.Text;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 public class SimpleLoadBalancerTest {
@@ -262,6 +263,66 @@ public class SimpleLoadBalancerTest {
     }
     // average is 58, with 2 at 59: we need 48 more moved to the short server
     assertEquals(48, moved);
+  }
+
+  @Test
+  @Disabled("Enable together with the getMigrations() double-count fix in SimpleLoadBalancer "
+      + "(uncomment 'int needToLoad = goal - tooLittle.count;' and remove the buggy line). This "
+      + "asserts the desired single-pass convergence; while the bug is present the same scenario "
+      + "instead converges as [8, 4, 2, 1, 1] -- five halving passes -- and this test fails.")
+  public void testUnderloadedServerConvergesInOnePass() {
+    // One under-loaded "recipient" server must be filled from many "donor" servers whose
+    // individual surplus (1 tablet) is smaller than the recipient's deficit (16). This is the
+    // exact case that triggers the movedAlready double-count in getMigrations(): each balance
+    // pass fills the recipient to only half its remaining deficit, so a correct balancer needs
+    // ONE pass (move 16) while the buggy balancer takes five (8, then 4, 2, 1, 1).
+    //
+    // Every tablet uses a unique table name so that every TabletId is distinct -- move() keys
+    // online tablets by TabletId, so identical extents would collapse to a single movable tablet
+    // (the reason testUnevenAssignment2's repeated "t0" tablets cannot be reused here).
+    int tableCounter = 0;
+
+    // recipient: 4 tablets (the even count is 20, so its deficit is 16)
+    TabletServerId recipient = new TabletServerIdImpl("127.0.0.1", 1000, "recipient");
+    FakeTServer recipientTServer = new FakeTServer();
+    servers.put(recipient, recipientTServer);
+    for (int k = 0; k < 4; k++) {
+      recipientTServer.tablets.add(makeTablet("r" + tableCounter++, null, null));
+    }
+
+    // 16 donors: 21 tablets each (one over the even count of 20)
+    for (int j = 0; j < 16; j++) {
+      TabletServerId donor = new TabletServerIdImpl("127.0.0.1", 2000 + j, "donor" + j);
+      FakeTServer donorTServer = new FakeTServer();
+      servers.put(donor, donorTServer);
+      for (int k = 0; k < 21; k++) {
+        donorTServer.tablets.add(makeTablet("d" + tableCounter++, null, null));
+      }
+    }
+
+    TestSimpleLoadBalancer balancer = new TestSimpleLoadBalancer();
+    Set<TabletId> migrations = Collections.emptySet();
+    List<Integer> movesPerPass = new ArrayList<>();
+    // balance until converged, recording how many tablets each pass migrates
+    while (true) {
+      List<TabletMigration> migrationsOut = new ArrayList<>();
+      balancer.balance(new BalanceParamsImpl(getAssignments(servers), migrations, migrationsOut,
+          DataLevel.USER.name(), Map.of()));
+      if (migrationsOut.isEmpty()) {
+        break;
+      }
+      movesPerPass.add(migrationsOut.size());
+      for (TabletMigration migration : migrationsOut) {
+        servers.get(migration.getOldTabletServer()).tablets.remove(migration.getTablet());
+        servers.get(migration.getNewTabletServer()).tablets.add(migration.getTablet());
+      }
+    }
+
+    // The total moved equals the deficit either way; the point is HOW MANY passes it takes.
+    assertEquals(16, movesPerPass.stream().mapToInt(Integer::intValue).sum(),
+        "should move exactly the recipient's deficit of 16 tablets");
+    assertEquals(List.of(16), movesPerPass,
+        "a correct balancer fills the under-loaded server in a single pass");
   }
 
   private void checkBalance(List<TabletId> metadataTable, Map<TabletServerId,FakeTServer> servers,
